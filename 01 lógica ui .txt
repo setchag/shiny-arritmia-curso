@@ -1,0 +1,209 @@
+# ========================
+# Cargar Librerías necesarias
+# ========================
+
+library(shiny)        # Crear aplicaciones web interactivas
+library(rsconnect)    # Publicar aplicaciones Shiny
+library(DT)           # Mostrar tablas interactivas
+library(cli)          # Mejorar la salida en consola
+library(ggplot2)      # Crear gráficos
+library(DataExplorer) # Explorar y visualizar datos
+library(e1071)        # Métodos de clasificación (SVM, etc.)
+library(caret)        # Herramientas de Machine Learning
+library(caTools)      # Particionar los datos (createDataPartition)
+library(pROC)         # Graficar curvas ROC y calcular AUC
+library(FSelector)    # Métodos de selección de variables (filtros)
+library(corrplot)     # Gráficos de correlación
+library(partykit)     # Visualización de árboles de decisión
+library(shinyjs)      # Permitir funcionalidades avanzadas en Shiny (habilitar/inhabilitar botones)
+library(C50)          # Clasificador C5.0
+
+# ========================
+# Interfaz de Usuario (UI)
+# ========================
+
+ui <- fluidPage(
+  
+  # Título principal de la aplicación
+  titlePanel("Optimización de Modelos para Identificar Arritmia Cardíaca con Aprendizaje Automático"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      
+      # Condicional: Solo aparece si no está en las pestañas de filtros o referencias
+      conditionalPanel(
+        condition = "input.main_tabs != 'Variables Relevantes (Filtros)' && input.main_tabs != 'Variables Relevantes (Metaheurísticas)' && input.main_tabs != 'Referencias'",
+        
+        h3("Menú Principal"),
+        fileInput("file1", "Cargar Dataset", accept = c(".csv", ".xlsx")),  # Cargar archivo
+        actionButton("load_sample", "Dataset Arritmia Precargado", class = "btn-lg btn-success"),  # Cargar dataset de muestra
+        checkboxInput("header", "Leer encabezados", TRUE),  # Leer encabezados del archivo
+        Output("data_view"),  # Mostrar nombre del dataset cargado
+        selectInput("target_var", "Seleccionar Variable a Predecir:", choices = NULL),  # Seleccionar variable objetivo
+        verbatimTextOutput("class_info"),  # Mostrar clases encontradas
+        selectInput("negative_class", "Clase Negativa (1):", choices = NULL),  # Seleccionar clase negativa
+        selectInput("positive_class", "Clases Positivas (2):", choices = NULL, multiple = TRUE),  # Seleccionar clases positivas
+        actionButton("convert_binary", "Convertir a Clase Binaria")  # Convertir el dataset a problema binario
+      ),
+      
+      # Condicional: Configuración para selección de variables por filtro
+      conditionalPanel(
+        condition = "input.main_tabs == 'Variables Relevantes (Filtros)'",
+        
+        actionButton("reset_filter", "Reiniciar Filtro y clasificador", icon = icon("redo"), class = "btn btn-danger"),
+        
+        h4("Variable Predictora (Clase):"),
+        verbatimTextOutput("selected_target"),  # Mostrar variable objetivo seleccionada
+        
+        h3("Selección de Variables Relevantes"),
+        hr(),
+        
+        # Selección de método de filtrado
+        selectInput("filter_method", "1. Seleccione un Método Filtro:",
+                    choices = c("CFS", "Consistency", "Chi.squared", "Information Gain",
+                                "Gain Ratio", "Symmetrical Uncertainty", "OneR")),
+        
+        actionButton("apply_filter", "Aplicar Filtro", class = "btn btn-primary"),
+        verbatimTextOutput("num_selected_vars"),  # Mostrar número de variables seleccionadas
+        
+        hr(),
+        
+        # Selección de clasificador para evaluar variables seleccionadas
+        selectInput("classifier", "2. Seleccione un Clasificador:",
+                    choices = c("C5.0", "Rpart", "PART", "JRip", "OneR", "SVMlin", "KNN", "Random Forest")),
+        
+        actionButton("apply_classifier_30times", "Ejecutar Clasificador 30 Veces", class = "btn btn-primary")
+      ),
+      
+      # Condicional: Mostrar imagen si está en pestaña de referencias
+      conditionalPanel(
+        condition = "input.main_tabs == 'Referencias'",
+        img(src = "dacyti3.jpg", height = "462px", width = "429px")
+      )
+    ),
+    
+    # Panel Principal
+    mainPanel(
+      tabsetPanel(
+        id = "main_tabs",
+        
+        # Pestaña Información
+        tabPanel("Información",
+                 h4(strong("Bienvenido ", style = "color: blue;")),
+                 h5(p(strong("Para comenzar, cargue un archivo CSV o seleccione el dataset precargado usando las opciones de la barra lateral.", style = "color: red;"))),
+                 p("Una vez cargado el dataset, se habilitarán las pestañas de datos, preprocesamiento y modelado."),
+                 
+                 h4("Acerca de la arritmia cardiaca y el electrocardiograma (ECG)"),
+                 p("Una arritmia es un latido o ritmo cardíaco irregular. Puede clasificarse en distintas clases."),
+                 p("La electrocardiografía (ECG) es un método para analizar la condición cardíaca de un paciente..."),
+                 
+                 h4("Información del conjunto de datos"),
+                 p("Esta base de datos contiene 279 atributos, 206 de los cuales son de valor lineal y el resto nominales."),
+                 p("El objetivo es distinguir entre la presencia y ausencia de arritmia cardiaca..."),
+                 
+                 img(src = "arritmia.jpg", height = "380px", width = "780px")
+        ),
+        
+        # Pestaña Datos
+        tabPanel("Datos",
+                 tabsetPanel(
+                   tabPanel("Vista de Datos", dataTableOutput("data_table")),  # Vista de datos cargados
+                   tabPanel("Resumen", uiOutput("summary_view")),  # Resumen estadístico de los datos
+                   tabPanel("Valores Nulos",
+                            plotOutput("na_plot"),  # Visualización de NAs
+                            textOutput("na_message"),  # Mensaje relacionado a NAs
+                            actionButton("remove_high_na", "Eliminar Columnas con >80% NAs", class = "btn-danger"),
+                            
+                            h4("Métodos de Imputación"),
+                            radioButtons("imputation_methods", "Seleccione un Método de Imputación:",
+                                         choices = c("Media" = "mean", "Mediana" = "median", "Moda" = "mode"),
+                                         selected = "mean"),
+                            actionButton("apply_imputation", "Aplicar Imputación", class = "btn-lg btn-success"),
+                            downloadButton("download_data", "Descargar Dataset Imputado", class = "butt"),
+                            tags$head(tags$style(".butt{background-color:orange;} .butt{color: black;}"))
+                   ),
+                   tabPanel("Modelos de clasificación",
+                            h3("Modelos de clasificación con el dataset Completo"),
+                            hr(),
+                            selectInput("classifier_all", "Seleccione un Clasificador:",
+                                        choices = c("C5.0", "Rpart", "PART", "JRip", "OneR", "SVMlin", "KNN", "Random Forest")),
+                            actionButton("apply_classifier_30times_all", "Ejecutar Clasificador 30 Veces", class = "btn btn-primary"),
+                            DTOutput("metrics_table_all"),  # Mostrar métricas de los modelos
+                            downloadButton("download_results_all", "Descargar Resultados", class = "butt1"),
+                            tags$head(tags$style(".butt1{background-color:orange;} .butt{color: black;}"))
+                   )
+                 )
+        ),
+        
+        # Pestaña Variables Relevantes (Filtros)
+        tabPanel("Variables Relevantes (Filtros)",
+                 tabsetPanel(
+                   tabPanel("Subconjunto Seleccionado",
+                            h3("Dataset Filtrado"),
+                            DT::dataTableOutput("summary_table"),
+                            downloadButton("download_data2", "Descargar Dataset Filtrado", class = "butt1"),
+                            DTOutput("metrics_table"),
+                            downloadButton("download_results", "Descargar Resultados", class = "butt1")
+                   ),
+                   tabPanel("Gráficas y Reglas",
+                            selectInput("tree_run", "Seleccione el número de ejecución para mostrar las reglas del arbol:", choices = 1:30),
+                            downloadButton("download_tree_plot", "Descargar Gráfico del Árbol", class = "butt1"),
+                            plotOutput("tree_plot", height = "600px"),  # Mostrar árbol
+                            downloadButton("download_tree_text", "Descargar Árbol como Texto", class = "butt1"),
+                            verbatimTextOutput("tree_text")  # Mostrar texto del árbol
+                   ),
+                   tabPanel("Resultados 30 veces",
+                            verbatimTextOutput("result_30"),
+                            downloadButton("download_summary_30", "Descargar 30 ejecuciones", class = "butt1"),
+                            DTOutput("metrics_table_30")
+                   ),
+                   tabPanel("Gráfico de Correlación",
+                            h3("Gráfico de Correlación"),
+                            plotOutput("correlation_plot")
+                   ),
+                   tabPanel("Resumen del subconjunto",
+                            h3("Resumen del Modelo de Clasificación"),
+                            verbatimTextOutput("model_summary")
+                   )
+                 )
+        ),
+        
+        # Pestaña Referencias
+        tabPanel("Referencias",
+                 tabsetPanel(
+                   tabPanel("Referencias",
+                            h3(strong("Referencias utilizadas:")),
+                            tags$ul(
+                              tags$li("Guvenir et al., UCI Machine Learning Repository: ", tags$a(href = "https://archive.ics.uci.edu/ml/datasets/arrhythmia", "Arrhythmia Dataset")),
+                              tags$li("Sitio oficial de Shiny: ", tags$a(href = "https://shiny.posit.co", "Shiny")),
+                              tags$li("Paquete FSelector: ", tags$a(href = "https://rdrr.io/cran/FSelector", "FSelector")),
+                              tags$li("Sitio oficial de R: ", tags$a(href = "https://www.r-project.org", "R Project"))
+                            ),
+                            hr(),
+                            h3(strong("Nombre de autores:")),
+                            tags$ul(
+                              tags$li(strong("M. Sc. Santiago Arias García")),
+                              tags$li(strong("Dr. José Hernández Torruco")),
+                              tags$li(strong("Dra. Betania Hernández Ocaña"))
+                            )
+                   )
+                 )
+        )
+      )
+    )
+  )
+)
+
+# ========================
+# Lógica del Servidor (Server)
+# ========================
+
+server <- function(input, output, session) {
+  # (Aquí irá la programación reactiva y funciones del servidor)
+}
+
+# ========================
+# Ejecutar la aplicación
+# ========================
+
+shinyApp(ui, server)
